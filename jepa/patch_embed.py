@@ -55,9 +55,20 @@ def extract_patches(images, patch_size: int):
         then the next row down. Everything downstream (positional encodings,
         masking) assumes this ordering, so it has to stay consistent.
     """
-    # TODO (together): three lines -- reshape, transpose, reshape.
-    # Use ops.shape(images)[0] for the batch dim, which is dynamic.
-    raise NotImplementedError
+    b = ops.shape(images)[0]                # dynamic: unknown until runtime
+    h, w, c = images.shape[1], images.shape[2], images.shape[3]
+    gr, gc = h // patch_size, w // patch_size
+
+    # Split H -> (gr, py) and W -> (gc, px), giving six axes:
+    #   B, grid_row, row-in-patch, grid_col, col-in-patch, channels
+    x = ops.reshape(images, [b, gr, patch_size, gc, patch_size, c])
+
+    # Bring the two "which patch" axes next to each other, ahead of the two
+    # "where inside the patch" axes. This is the step reshape alone cannot do.
+    x = ops.transpose(x, [0, 1, 3, 2, 4, 5])
+
+    # Merge (gr, gc) -> num_patches and (py, px, C) -> patch_dim.
+    return ops.reshape(x, [b, gr * gc, patch_size * patch_size * c])
 
 
 # ---------------------------------------------------------------------------
