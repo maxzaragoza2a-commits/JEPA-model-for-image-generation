@@ -1,0 +1,8 @@
+# Core: TensorFlow 2.21 bundles Keras 3.x as its frontend.
+# NOTE: TensorFlow >= 2.11 has no native-Windows GPU support; this runs on CPU here.
+tensorflow==2.21.0
+keras==3.15.0
+numpy==2.4.1
+
+# Visualising patches, masks and training curves.
+matplotlib==3.10.8
