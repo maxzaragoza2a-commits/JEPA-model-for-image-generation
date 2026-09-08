@@ -55,25 +55,51 @@ def extract_patches(images, patch_size: int):
         then the next row down. Everything downstream (positional encodings,
         masking) assumes this ordering, so it has to stay consistent.
     """
-    b = ops.shape(images)[0]                # dynamic: unknown until runtime
+
+    batch_size = ops.shape(images)[0]  # batch dim
     h, w, c = images.shape[1], images.shape[2], images.shape[3]
     gr, gc = h // patch_size, w // patch_size
 
-    # Split H -> (gr, py) and W -> (gc, px), giving six axes:
-    #   B, grid_row, row-in-patch, grid_col, col-in-patch, channels
-    x = ops.reshape(images, [b, gr, patch_size, gc, patch_size, c])
+    transpose_order = [0, 1, 3, 2, 4, 5]                              # B, gr, gc, py, px, C
+    split_shape = [batch_size, gr, patch_size, gc, patch_size, c]     # 6 axes
+    final_shape = [batch_size, gr * gc, patch_size * patch_size * c]  # B, 64, 48
 
-    # Bring the two "which patch" axes next to each other, ahead of the two
-    # "where inside the patch" axes. This is the step reshape alone cannot do.
-    x = ops.transpose(x, [0, 1, 3, 2, 4, 5])
-
-    # Merge (gr, gc) -> num_patches and (py, px, C) -> patch_dim.
-    return ops.reshape(x, [b, gr * gc, patch_size * patch_size * c])
+    x = ops.reshape(images, split_shape)      # 1. split the axes
+    x = ops.transpose(x, transpose_order)     # 2. actually move the numbers
+    return ops.reshape(x, final_shape)        # 3. flatten
 
 
 # ---------------------------------------------------------------------------
 # Step 3 -- telling the model where each patch came from
 # ---------------------------------------------------------------------------
+
+def get_1d_sincos(d, pos):
+    """Sine-cosine encoding of a 1-D sequence of positions.
+
+    Args:
+        d: width of the vector produced for each position. Must be even --
+            half the dimensions come from sin, half from cos.
+        pos: 1-D array of positions to encode, shape (M,).
+
+    Returns:
+        np.ndarray, shape (M, d).
+    """
+    # d // 2 frequencies, geometrically spaced from 1 down to 1e-4. Fast
+    # "clocks" separate neighbouring positions, slow ones distant positions.
+    omega = np.arange(d // 2, dtype=np.float32)
+    omega /= d / 2
+    omega = 1. / (10000 ** omega)  # (d/2,)
+
+    # Outer product: every position seen by every frequency.
+    angles = pos[:, None] * omega  # (M, d/2)
+
+    # sin AND cos of the same angles. The pair is unambiguous -- a sine alone
+    # takes each value twice per period -- and it turns a shift in position
+    # into a fixed rotation of the encoding, which is what lets the predictor
+    # reason about relative positions.
+    return np.concatenate([np.sin(angles), np.cos(angles)], axis=1)
+
+
 def get_2d_sincos_pos_embed(embed_dim: int, grid_size: int) -> np.ndarray:
     """Fixed (non-learned) 2D sine-cosine positional encodings.
 
@@ -95,8 +121,19 @@ def get_2d_sincos_pos_embed(embed_dim: int, grid_size: int) -> np.ndarray:
         np.ndarray, shape (grid_size * grid_size, embed_dim), row-major to
         match `extract_patches`.
     """
-    # TODO (together)
-    raise NotImplementedError
+    # Row-major coordinates: the row varies slowly, the column varies fast.
+    #   rows = 0,0,...,0, 1,1,...,1, ...   cols = 0,1,...,7, 0,1,...,7, ...
+    # This is the order extract_patches emits its tokens in.
+    coords = np.arange(grid_size, dtype=np.float32)
+    rows = np.repeat(coords, grid_size)
+    cols = np.tile(coords, grid_size)
+
+    # Each half of the dimension budget encodes one coordinate.
+    emb_row = get_1d_sincos(embed_dim // 2, rows)   # (grid_size**2, embed_dim//2)
+    emb_col = get_1d_sincos(embed_dim // 2, cols)   # (grid_size**2, embed_dim//2)
+
+    # axis=1: concatenate DIMENSIONS, not positions.
+    return np.concatenate([emb_row, emb_col], axis=1)
 
 
 # ---------------------------------------------------------------------------
