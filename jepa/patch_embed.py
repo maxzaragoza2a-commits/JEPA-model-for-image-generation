@@ -146,16 +146,53 @@ class PatchEmbedding(keras.layers.Layer):
         super().__init__(**kwargs)
         self.patch_size = patch_size
         self.embed_dim = embed_dim
-        # TODO (together): the projection layer and the positional table.
+
+        # Both depend on the input resolution, so they wait for build().
+        self.projection = None
+        self.pos_embed = None
 
     def build(self, input_shape):
-        # TODO (together): derive grid_size / num_patches from input_shape,
-        # create the Dense projection, and store the positional encodings.
-        raise NotImplementedError
+        """Create the shared projection and the fixed positional table.
+
+        Args:
+            input_shape: (B, H, W, C). H and W must be divisible by
+                patch_size, and square, since the grid is grid_size x
+                grid_size.
+        """
+        _, h, w, c = input_shape
+        self.grid_size = h // self.patch_size
+        self.num_patches = self.grid_size * (w // self.patch_size)
+        patch_dim = self.patch_size * self.patch_size * c
+
+        # ONE Dense shared by every patch: it is applied to the last axis, so
+        # the same weights see all num_patches tokens. That is what makes the
+        # layer independent of how many patches there are.
+        self.projection = keras.layers.Dense(self.embed_dim, name="projection")
+        self.projection.build((None, patch_dim))
+
+        # Fixed, not learned -- but registered as a non-trainable weight so it
+        # travels with the layer through save/load and device placement.
+        self.pos_embed = self.add_weight(
+            name="pos_embed",
+            shape=(self.num_patches, self.embed_dim),
+            initializer="zeros",
+            trainable=False,
+        )
+        self.pos_embed.assign(
+            get_2d_sincos_pos_embed(self.embed_dim, self.grid_size)
+        )
+
+        super().build(input_shape)
 
     def call(self, images):
-        # TODO (together): steps 1 -> 2 -> 3.
-        raise NotImplementedError
+        """(B, H, W, C) -> (B, num_patches, embed_dim)."""
+        patches = extract_patches(images, self.patch_size)  # step 1
+        tokens = self.projection(patches)                   # step 2
+
+        # Step 3. Broadcasting adds the same (num_patches, embed_dim) table to
+        # every image in the batch. Without it self-attention could not tell
+        # a patch at the top-left from the same patch anywhere else.
+        return tokens + self.pos_embed
 
     def get_config(self):
         config = super().get_config()
